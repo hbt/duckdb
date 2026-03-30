@@ -4152,6 +4152,24 @@ RecoveryMode EnumUtil::FromString<RecoveryMode>(const char *value) {
 	return static_cast<RecoveryMode>(StringUtil::StringToEnum(GetRecoveryModeValues(), 2, "RecoveryMode", value));
 }
 
+const StringUtil::EnumStringLiteral *GetLockConfigValues() {
+	static const StringUtil::EnumStringLiteral values[] = {
+		{ static_cast<uint32_t>(LockConfig::DEFAULT), "DEFAULT" },
+		{ static_cast<uint32_t>(LockConfig::TRY), "TRY" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<LockConfig>(LockConfig value) {
+	return StringUtil::EnumToString(GetLockConfigValues(), 2, "LockConfig", static_cast<uint32_t>(value));
+}
+
+template<>
+LockConfig EnumUtil::FromString<LockConfig>(const char *value) {
+	return static_cast<LockConfig>(StringUtil::StringToEnum(GetLockConfigValues(), 2, "LockConfig", value));
+}
+
 const StringUtil::EnumStringLiteral *GetRelationTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(RelationType::INVALID_RELATION), "INVALID_RELATION" },

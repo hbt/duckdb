@@ -45,6 +45,7 @@ struct EncryptionOptions {
 struct StorageManagerOptions {
 	bool read_only = false;
 	bool use_direct_io = false;
+	bool try_lock_on_conflict = false;
 	DebugInitialize debug_initialize = DebugInitialize::NO_INITIALIZE;
 	optional_idx block_alloc_size;
 	optional_idx storage_version;

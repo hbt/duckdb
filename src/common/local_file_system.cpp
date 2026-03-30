@@ -401,7 +401,9 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 		if (file_type != FileType::FILE_TYPE_FIFO && file_type != FileType::FILE_TYPE_SOCKET) {
 			struct flock fl;
 			memset(&fl, 0, sizeof fl);
-			fl.l_type = flags.Lock() == FileLockType::READ_LOCK ? F_RDLCK : F_WRLCK;
+			auto lock_type = flags.Lock();
+			fl.l_type = (lock_type == FileLockType::READ_LOCK || lock_type == FileLockType::TRY_READ_LOCK) ? F_RDLCK
+			                                                                                                : F_WRLCK;
 			fl.l_whence = SEEK_SET;
 			fl.l_start = 0;
 			fl.l_len = 0;
@@ -411,9 +413,14 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 			bool has_error = rc == -1;
 			string extended_error;
 			if (has_error) {
-				if (retained_errno == ENOTSUP) {
+				if (lock_type == FileLockType::TRY_READ_LOCK &&
+				    (retained_errno == EAGAIN || retained_errno == EACCES)) {
+					// Lock is held by another process; proceed without the lock in TRY mode.
+					has_error = false;
+					errno = 0;
+				} else if (retained_errno == ENOTSUP) {
 					// file lock not supported for this file system
-					if (flags.Lock() == FileLockType::READ_LOCK) {
+					if (lock_type == FileLockType::READ_LOCK || lock_type == FileLockType::TRY_READ_LOCK) {
 						// for read-only, we ignore not-supported errors
 						has_error = false;
 						errno = 0;
@@ -1051,6 +1058,10 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 		break;
 	case FileLockType::READ_LOCK:
 		share_mode = FILE_SHARE_READ;
+		break;
+	case FileLockType::TRY_READ_LOCK:
+		// TRY_READ_LOCK: allow shared read access (same as READ_LOCK on Windows).
+		share_mode = FILE_SHARE_READ | FILE_SHARE_WRITE;
 		break;
 	case FileLockType::WRITE_LOCK:
 		share_mode = 0;

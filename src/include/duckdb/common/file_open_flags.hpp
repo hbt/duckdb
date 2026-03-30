@@ -14,7 +14,7 @@
 
 namespace duckdb {
 
-enum class FileLockType : uint8_t { NO_LOCK = 0, READ_LOCK = 1, WRITE_LOCK = 2 };
+enum class FileLockType : uint8_t { NO_LOCK = 0, READ_LOCK = 1, WRITE_LOCK = 2, TRY_READ_LOCK = 3 };
 
 class FileOpenFlags {
 public:

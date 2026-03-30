@@ -29,6 +29,9 @@ struct StorageOptions {
 
 	CompressInMemory compress_in_memory = CompressInMemory::AUTOMATIC;
 
+	//! Whether to proceed without a lock when the lock acquisition fails (TRY mode, read-only only)
+	bool try_lock_on_conflict = false;
+
 	//! Whether the database is encrypted
 	bool encryption = false;
 	//! Encryption algorithm

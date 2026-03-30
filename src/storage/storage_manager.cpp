@@ -143,6 +143,7 @@ StorageManager::StorageManager(AttachedDatabase &db, string path_p, AttachOption
 	path = fs.ExpandPath(path);
 
 	storage_options.Initialize(options.options);
+	storage_options.try_lock_on_conflict = (options.lock_config == LockConfig::TRY);
 }
 
 StorageManager::~StorageManager() {
@@ -330,6 +331,10 @@ void StorageManager::Initialize(QueryContext context) {
 		throw CatalogException("Cannot launch in-memory database in read-only mode!");
 	}
 
+	if (storage_options.try_lock_on_conflict && !read_only) {
+		throw InvalidInputException("LOCK_CONFIG 'try' is only valid with READ_ONLY access mode");
+	}
+
 	// Create or load the database from disk, if not in-memory mode.
 	LoadDatabase(context);
 
@@ -388,6 +393,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 	options.use_direct_io = config.options.use_direct_io;
 	options.debug_initialize = config.options.debug_initialize;
 	options.storage_version = storage_options.storage_version;
+	options.try_lock_on_conflict = storage_options.try_lock_on_conflict;
 
 	if (storage_options.encryption) {
 		// key is given upon ATTACH
@@ -527,7 +533,12 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 
 		// Replay the WAL.
 		wal_path = GetWALPath();
-		wal = WriteAheadLog::Replay(context, *this, wal_path);
+		if (storage_options.try_lock_on_conflict) {
+			// TRY lock mode: skip WAL replay — only see the last completed checkpoint.
+			wal = make_uniq<WriteAheadLog>(*this, wal_path);
+		} else {
+			wal = WriteAheadLog::Replay(context, *this, wal_path);
+		}
 
 		// End timing the WAL replay step.
 		if (timer) {
