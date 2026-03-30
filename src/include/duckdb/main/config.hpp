@@ -15,6 +15,7 @@
 #include "duckdb/common/cgroups.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/enums/access_mode.hpp"
+#include "duckdb/common/enums/lock_config.hpp"
 #include "duckdb/common/enums/cache_validation_mode.hpp"
 #include "duckdb/common/enums/thread_pin_mode.hpp"
 #include "duckdb/common/enums/compression_type.hpp"
@@ -75,6 +76,8 @@ struct DBConfigOptions {
 	string database_type;
 	//! Access mode of the database (AUTOMATIC, READ_ONLY or READ_WRITE)
 	AccessMode access_mode = AccessMode::AUTOMATIC;
+	//! Lock configuration (DEFAULT or TRY). TRY proceeds without lock when a writer holds it (read-only only).
+	LockConfig lock_config = LockConfig::DEFAULT;
 	//! Checkpoint when WAL reaches this size (default: 16MiB)
 	idx_t checkpoint_wal_size = 1 << 24;
 	//! Whether or not to use Direct IO, bypassing operating system buffers

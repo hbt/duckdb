@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/printer.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/windows.hpp"
 #include "duckdb/function/scalar/string_common.hpp"
@@ -408,7 +409,9 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 		if (file_type != FileType::FILE_TYPE_FIFO && file_type != FileType::FILE_TYPE_SOCKET) {
 			struct flock fl;
 			memset(&fl, 0, sizeof fl);
-			fl.l_type = flags.Lock() == FileLockType::READ_LOCK ? F_RDLCK : F_WRLCK;
+			fl.l_type = (flags.Lock() == FileLockType::READ_LOCK || flags.Lock() == FileLockType::TRY_READ_LOCK)
+			                ? F_RDLCK
+			                : F_WRLCK;
 			fl.l_whence = SEEK_SET;
 			fl.l_start = 0;
 			fl.l_len = 0;
@@ -428,6 +431,16 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 						extended_error = "File locks are not supported for this file system, cannot open the file in "
 						                 "read-write mode. Try opening the file in read-only mode";
 					}
+				} else if (flags.Lock() == FileLockType::TRY_READ_LOCK &&
+				           (retained_errno == EAGAIN || retained_errno == EACCES)) {
+					// Writer holds exclusive lock; user opted in via LOCK_CONFIG 'try'.
+					// Keep FD open, emit warning, proceed without lock.
+					Printer::Print(StringUtil::Format(
+					    "Warning: could not acquire read lock on \"%s\": %s. "
+					    "Opening without lock; reading last checkpoint only.\n",
+					    path, strerror(retained_errno)));
+					has_error = false;
+					errno = 0;
 				}
 			}
 			if (has_error) {
@@ -1063,6 +1076,10 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 	case FileLockType::WRITE_LOCK:
 		share_mode = 0;
 		break;
+	case FileLockType::TRY_READ_LOCK:
+		// Attempt shared read access; if writer holds exclusive lock, retry with full share to proceed without lock.
+		share_mode = FILE_SHARE_READ;
+		break;
 	default:
 		throw InternalException("Unknown FileLockType");
 	}
@@ -1083,6 +1100,19 @@ unique_ptr<FileHandle> LocalFileSystem::OpenFile(const string &path_p, FileOpenF
 	}
 	HANDLE hFile = CreateFileW(unicode_path.c_str(), desired_access, share_mode, NULL, creation_disposition,
 	                           flags_and_attributes, NULL);
+	if (hFile == INVALID_HANDLE_VALUE && flags.Lock() == FileLockType::TRY_READ_LOCK &&
+	    GetLastError() == ERROR_SHARING_VIOLATION) {
+		// Writer holds exclusive lock; retry with full share mode (no lock) and emit a warning.
+		DWORD full_share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+		hFile = CreateFileW(unicode_path.c_str(), desired_access, full_share, NULL, creation_disposition,
+		                    flags_and_attributes, NULL);
+		if (hFile != INVALID_HANDLE_VALUE) {
+			Printer::Print(StringUtil::Format(
+			    "Warning: could not acquire read lock on \"%s\": sharing violation. "
+			    "Opening without lock; reading last checkpoint only.\n",
+			    path.c_str()));
+		}
+	}
 	if (hFile == INVALID_HANDLE_VALUE) {
 		if (flags.ReturnNullIfNotExists() && GetLastError() == ERROR_FILE_NOT_FOUND) {
 			return nullptr;

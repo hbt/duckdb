@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/enums/lock_config.hpp"
 #include "duckdb.hpp"
 #include "test_helpers.hpp"
 
@@ -101,5 +102,58 @@ TEST_CASE("Test read lock with multiple processes", "[persistence][.]") {
 		if (kill(pid, SIGKILL) != 0) {
 			FAIL();
 		}
+	}
+}
+
+TEST_CASE("Test read-only with try lock while writer is active", "[persistence][.]") {
+	uint64_t *count =
+	    (uint64_t *)mmap(NULL, sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, 0, 0);
+	*count = 0;
+
+	string dbdir = TestCreatePath("trylocktest");
+	DeleteDatabase(dbdir);
+
+	// Create DB and checkpoint data
+	{
+		DuckDB db(dbdir);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(i INTEGER)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO a VALUES (42)"));
+	}
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		// child: open for writing (holds F_WRLCK)
+		DuckDB db(dbdir);
+		Connection con(db);
+		(*count)++;
+		while (true) {
+			con.Query("SELECT * FROM a");
+			usleep(100);
+		}
+	} else if (pid > 0) {
+		while (*count == 0) {
+			usleep(100);
+		}
+
+		// Without LOCK_CONFIG 'try' — must still throw (regression guard)
+		DBConfig ro_config;
+		ro_config.options.access_mode = AccessMode::READ_ONLY;
+		duckdb::unique_ptr<DuckDB> db;
+		REQUIRE_THROWS(db = make_uniq<DuckDB>(dbdir, &ro_config));
+
+		// With LOCK_CONFIG 'try' — must NOT throw
+		DBConfig try_config;
+		try_config.options.access_mode = AccessMode::READ_ONLY;
+		try_config.options.lock_config = LockConfig::TRY;
+		REQUIRE_NOTHROW(db = make_uniq<DuckDB>(dbdir, &try_config));
+
+		// Must read last checkpoint data
+		Connection con(*db);
+		auto result = con.Query("SELECT i FROM a");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->GetValue(0, 0) == Value::INTEGER(42));
+
+		kill(pid, SIGKILL);
 	}
 }

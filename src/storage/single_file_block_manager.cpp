@@ -327,7 +327,8 @@ FileOpenFlags SingleFileBlockManager::GetFileFlags(bool create_new) const {
 	FileOpenFlags result;
 	if (options.read_only) {
 		D_ASSERT(!create_new);
-		result = FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS | FileLockType::READ_LOCK;
+		auto lock_type = options.try_lock_on_conflict ? FileLockType::TRY_READ_LOCK : FileLockType::READ_LOCK;
+		result = FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_NULL_IF_NOT_EXISTS | lock_type;
 	} else {
 		result = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_READ | FileLockType::WRITE_LOCK;
 		if (create_new) {

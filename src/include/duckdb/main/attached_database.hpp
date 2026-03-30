@@ -67,6 +67,8 @@ struct AttachOptions {
 	AccessMode access_mode;
 	//! The recovery type of the database.
 	RecoveryMode recovery_mode = RecoveryMode::DEFAULT;
+	//! Lock configuration (DEFAULT or TRY).
+	LockConfig lock_config = LockConfig::DEFAULT;
 	//! The file format type. The default type is a duckdb database file, but other file formats are possible.
 	string db_type;
 	//! Set of remaining (key, value) options

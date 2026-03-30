@@ -31,6 +31,8 @@ struct StorageOptions {
 
 	//! Whether the database is encrypted
 	bool encryption = false;
+	//! Try to open without lock when a writer holds it (read-only only).
+	bool try_lock_on_conflict = false;
 	//! Encryption algorithm
 	EncryptionTypes::CipherType encryption_cipher = EncryptionTypes::INVALID;
 	//! encryption key

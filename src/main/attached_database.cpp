@@ -36,7 +36,7 @@ void StoredDatabasePath::OnDetach() {
 // Attach Options
 //===--------------------------------------------------------------------===//
 AttachOptions::AttachOptions(const DBConfigOptions &options)
-    : access_mode(options.access_mode), db_type(options.database_type) {
+    : access_mode(options.access_mode), db_type(options.database_type), lock_config(options.lock_config) {
 }
 
 AttachOptions::AttachOptions(const unordered_map<string, Value> &attach_options, const AccessMode default_access_mode)
@@ -57,6 +57,12 @@ AttachOptions::AttachOptions(const unordered_map<string, Value> &attach_options,
 			// Extract the recovery mode.
 			auto mode_str = StringValue::Get(entry.second.DefaultCastAs(LogicalType::VARCHAR));
 			recovery_mode = EnumUtil::FromString<RecoveryMode>(mode_str);
+			continue;
+		}
+
+		if (entry.first == "lock_config") {
+			auto mode_str = StringValue::Get(entry.second.DefaultCastAs(LogicalType::VARCHAR));
+			lock_config = EnumUtil::FromString<LockConfig>(mode_str.c_str());
 			continue;
 		}
 
