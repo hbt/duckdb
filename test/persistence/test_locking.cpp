@@ -10,6 +10,12 @@
 
 using namespace duckdb;
 
+// Helper: configure a DBConfig for read-only with LOCK_CONFIG 'try'
+static void SetTryLockConfig(DBConfig &cfg) {
+	cfg.options.access_mode = AccessMode::READ_ONLY;
+	cfg.options.lock_config = LockConfig::TRY;
+}
+
 #define BOOL_COUNT 3
 
 TEST_CASE("Test write lock with multiple processes", "[persistence][.]") {
@@ -153,6 +159,162 @@ TEST_CASE("Test read-only with try lock while writer is active", "[persistence][
 		auto result = con.Query("SELECT i FROM a");
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(result->GetValue(0, 0) == Value::INTEGER(42));
+
+		kill(pid, SIGKILL);
+	}
+}
+
+// Guard: LOCK_CONFIG 'try' must be rejected when access mode is not READ_ONLY.
+// Verifies StorageManager::Initialize enforcement (no fork required).
+TEST_CASE("Test try lock guard — requires read-only mode", "[persistence][.]") {
+	string dbdir = TestCreatePath("trylockguardtest");
+	DeleteDatabase(dbdir);
+
+	{
+		DuckDB db(dbdir);
+	}
+
+	// LOCK_CONFIG 'try' without READ_ONLY must throw
+	DBConfig rw_try;
+	rw_try.options.lock_config = LockConfig::TRY;
+	// access_mode defaults to AUTOMATIC (read-write) → guard should fire
+	duckdb::unique_ptr<DuckDB> db;
+	REQUIRE_THROWS(db = make_uniq<DuckDB>(dbdir, &rw_try));
+
+	// LOCK_CONFIG 'try' with explicit READ_ONLY must succeed
+	DBConfig ro_try;
+	SetTryLockConfig(ro_try);
+	REQUIRE_NOTHROW(db = make_uniq<DuckDB>(dbdir, &ro_try));
+}
+
+// Guard: ATTACH SQL path — LOCK_CONFIG 'try' without READ_ONLY must be rejected.
+// Exercises the attach option parser + StorageManager guard through SQL (no fork required).
+TEST_CASE("Test ATTACH LOCK_CONFIG try requires read-only", "[persistence][.]") {
+	string dbdir = TestCreatePath("trylockattachguard");
+	DeleteDatabase(dbdir);
+
+	{
+		DuckDB db(dbdir);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(i INTEGER)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO a VALUES (7)"));
+	}
+
+	// Open an in-memory DB as the host connection
+	DuckDB host(":memory:");
+	Connection con(host);
+
+	// ATTACH without READ_ONLY must fail
+	auto bad = con.Query("ATTACH '" + dbdir + "' AS bad (LOCK_CONFIG 'try')");
+	REQUIRE(bad->HasError());
+
+	// ATTACH with READ_ONLY true must succeed
+	auto ok = con.Query("ATTACH '" + dbdir + "' AS ok (READ_ONLY true, LOCK_CONFIG 'try')");
+	REQUIRE_NO_FAIL(*ok);
+
+	// Data must be readable through the attached DB
+	auto result = con.Query("SELECT i FROM ok.a");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->GetValue(0, 0) == Value::INTEGER(7));
+}
+
+// Isolation: writer's un-checkpointed WAL data must NOT be visible to a try-lock reader.
+// Verifies the WAL-skip path in SingleFileStorageManager::LoadDatabase.
+TEST_CASE("Test try lock reader does not see writer WAL data", "[persistence][.]") {
+	uint64_t *count =
+	    (uint64_t *)mmap(NULL, sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, 0, 0);
+	*count = 0;
+
+	string dbdir = TestCreatePath("trylockwaltest");
+	DeleteDatabase(dbdir);
+
+	// Checkpoint: table a = {42}
+	{
+		DuckDB db(dbdir);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(i INTEGER)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO a VALUES (42)"));
+	}
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		// child: open for writing, insert 99 into WAL (no checkpoint)
+		DuckDB db(dbdir);
+		Connection con(db);
+		con.Query("INSERT INTO a VALUES (99)"); // goes to WAL only
+		(*count)++;
+		while (true) {
+			usleep(100);
+		}
+	} else if (pid > 0) {
+		while (*count == 0) {
+			usleep(100);
+		}
+
+		DBConfig try_cfg;
+		SetTryLockConfig(try_cfg);
+		duckdb::unique_ptr<DuckDB> db;
+		REQUIRE_NOTHROW(db = make_uniq<DuckDB>(dbdir, &try_cfg));
+
+		Connection con(*db);
+		// Must see only the checkpoint row (42), not the WAL row (99)
+		auto result = con.Query("SELECT i FROM a ORDER BY i");
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->RowCount() == 1);
+		REQUIRE(result->GetValue(0, 0) == Value::INTEGER(42));
+
+		kill(pid, SIGKILL);
+	}
+}
+
+// Concurrency: multiple independent try-lock opens while a writer is active must all succeed.
+// Verifies the non-exclusive nature of the try-lock path.
+TEST_CASE("Test multiple try-lock readers while writer is active", "[persistence][.]") {
+	uint64_t *count =
+	    (uint64_t *)mmap(NULL, sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, 0, 0);
+	*count = 0;
+
+	string dbdir = TestCreatePath("trylockMultiReader");
+	DeleteDatabase(dbdir);
+
+	{
+		DuckDB db(dbdir);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(i INTEGER)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO a VALUES (42)"));
+	}
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		// child: hold write lock
+		DuckDB db(dbdir);
+		Connection con(db);
+		(*count)++;
+		while (true) {
+			usleep(100);
+		}
+	} else if (pid > 0) {
+		while (*count == 0) {
+			usleep(100);
+		}
+
+		DBConfig try_cfg;
+		SetTryLockConfig(try_cfg);
+
+		// Open two independent try-lock instances simultaneously
+		duckdb::unique_ptr<DuckDB> db1, db2;
+		REQUIRE_NOTHROW(db1 = make_uniq<DuckDB>(dbdir, &try_cfg));
+		REQUIRE_NOTHROW(db2 = make_uniq<DuckDB>(dbdir, &try_cfg));
+
+		Connection con1(*db1);
+		Connection con2(*db2);
+
+		auto r1 = con1.Query("SELECT i FROM a");
+		auto r2 = con2.Query("SELECT i FROM a");
+		REQUIRE_NO_FAIL(*r1);
+		REQUIRE_NO_FAIL(*r2);
+		REQUIRE(r1->GetValue(0, 0) == Value::INTEGER(42));
+		REQUIRE(r2->GetValue(0, 0) == Value::INTEGER(42));
 
 		kill(pid, SIGKILL);
 	}
