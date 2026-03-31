@@ -39,9 +39,9 @@
 
 namespace duckdb {
 
-//! DEFAULT acquires the normal read/write lock.
-//! TRY attempts to acquire the lock; on conflict (EAGAIN/EACCES), proceeds without the lock.
-//! Only valid with READ_ONLY access mode.
+//! DEFAULT: READ_ONLY connections implicitly use TRY behavior (non-blocking lock, proceeds on
+//!          conflict). Read-write connections acquire a normal write lock.
+//! TRY: explicit opt-in (only valid with READ_ONLY; redundant since TRY is the implicit default).
 enum class LockConfig : uint8_t { DEFAULT = 0, TRY = 1 };
 
 class BlockAllocator;
@@ -170,7 +170,8 @@ struct DBConfigOptions {
 	LogConfig log_config = LogConfig();
 	//! Physical memory that the block allocator is allowed to use (this memory is never freed and cannot be reduced)
 	idx_t block_allocator_size = 0;
-	//! Lock acquisition mode for read-only connections. TRY proceeds without lock on conflict.
+	//! Lock acquisition mode. READ_ONLY connections implicitly use TRY (non-blocking, skip WAL on
+	//! conflict). Explicit TRY is accepted but redundant for READ_ONLY; invalid for read-write.
 	LockConfig lock_config = LockConfig::DEFAULT;
 
 	bool operator==(const DBConfigOptions &other) const;

@@ -143,7 +143,10 @@ StorageManager::StorageManager(AttachedDatabase &db, string path_p, AttachOption
 	path = fs.ExpandPath(path);
 
 	storage_options.Initialize(options.options);
-	storage_options.try_lock_on_conflict = (options.lock_config == LockConfig::TRY);
+	// READ_ONLY connections always use TRY behavior (non-blocking lock, proceed on conflict).
+	// Explicit lock_config=TRY on a non-READ_ONLY connection is caught later in Initialize().
+	const bool is_read_only = (options.access_mode == AccessMode::READ_ONLY);
+	storage_options.try_lock_on_conflict = is_read_only || (options.lock_config == LockConfig::TRY);
 }
 
 StorageManager::~StorageManager() {

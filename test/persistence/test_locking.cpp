@@ -270,3 +270,86 @@ TEST_CASE("Test multiple concurrent try-lock readers", "[persistence][.]") {
 		FAIL();
 	}
 }
+
+// Test 2.5: Plain READ_ONLY (no explicit lock_config) implicitly uses TRY behavior.
+// Uses [.] to opt out of default test runs (requires fork).
+TEST_CASE("Test read-only implicitly uses TRY behavior (no lock_config needed)", "[persistence][.]") {
+	uint64_t *ready = (uint64_t *)mmap(NULL, sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, 0, 0);
+	*ready = 0;
+
+	string dbpath = TestCreatePath("implicit_try_readonly");
+	DeleteDatabase(dbpath);
+
+	{
+		DuckDB db(dbpath);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INT)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES(1)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	}
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		// Child: hold a write lock by keeping a writer open.
+		DuckDB db(dbpath);
+		(*ready)++;
+		while (true) {
+			usleep(1000);
+		}
+	} else if (pid > 0) {
+		while (*ready == 0) {
+			usleep(100);
+		}
+		// Parent: plain READ_ONLY — no lock_config specified. Must not block or throw.
+		DBConfig config;
+		config.options.access_mode = AccessMode::READ_ONLY;
+		// lock_config intentionally left as DEFAULT — TRY should be implicit.
+		{
+			duckdb::unique_ptr<DuckDB> db2;
+			REQUIRE_NOTHROW(db2 = make_uniq<DuckDB>(dbpath, &config));
+		}
+		if (kill(pid, SIGKILL) != 0) {
+			FAIL();
+		}
+	}
+}
+
+// Test 2.6: SQL ATTACH with plain READ_ONLY (no lock_config) also uses implicit TRY.
+// Uses [.] to opt out of default test runs (requires fork).
+TEST_CASE("Test ATTACH read-only implicit TRY (no lock_config option)", "[persistence][.]") {
+	uint64_t *ready = (uint64_t *)mmap(NULL, sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, 0, 0);
+	*ready = 0;
+
+	string dbpath = TestCreatePath("implicit_try_attach");
+	DeleteDatabase(dbpath);
+
+	{
+		DuckDB db(dbpath);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE t(i INT)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO t VALUES(7)"));
+		REQUIRE_NO_FAIL(con.Query("CHECKPOINT"));
+	}
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		// Child: hold a write lock.
+		DuckDB db(dbpath);
+		(*ready)++;
+		while (true) {
+			usleep(1000);
+		}
+	} else if (pid > 0) {
+		while (*ready == 0) {
+			usleep(100);
+		}
+		// Parent: attach via SQL with READ_ONLY only — no lock_config option.
+		DuckDB db(nullptr);
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("ATTACH '" + dbpath + "' AS db1 (READ_ONLY)"));
+		REQUIRE_NO_FAIL(con.Query("SELECT * FROM db1.t"));
+		if (kill(pid, SIGKILL) != 0) {
+			FAIL();
+		}
+	}
+}
